@@ -1,44 +1,91 @@
 // SUI Address Generator from Seed Phrases
 const fs = require('fs');
 const { Ed25519Keypair } = require('@mysten/sui.js/keypairs/ed25519');
-const { mnemonicToSeedSync } = require('@scure/bip39');
+const { createReadStream } = require('fs');
+const readline = require('readline');
+
+const BATCH_SIZE = 1000; // Process 1000 lines at a time for local processing
 
 // Function to derive SUI address from mnemonic
-function getAddressFromMnemonic(mnemonic) {
+async function getAddressFromMnemonic(mnemonic) {
   try {
-    // Create a keypair from the mnemonic
     const keypair = Ed25519Keypair.deriveKeypair(mnemonic);
-    // Get the address
-    return keypair.getPublicKey().toSuiAddress();
+    const address = keypair.getPublicKey().toSuiAddress();
+    return address.startsWith('0x') ? address : '0x' + address;
   } catch (error) {
-    return `Error processing mnemonic: ${error.message}`;
+    throw new Error(`Invalid mnemonic phrase: ${error.message}`);
   }
+}
+
+// Process a batch of mnemonics
+async function processBatch(mnemonics) {
+  return Promise.all(
+    mnemonics.map(async (mnemonic) => {
+      try {
+        const address = await getAddressFromMnemonic(mnemonic);
+        return { mnemonic, address, success: true };
+      } catch (error) {
+        return { mnemonic, error: error.message, success: false };
+      }
+    })
+  );
 }
 
 // Main function to process the file
 async function processFile(filePath) {
   try {
-    // Read the file
-    const fileContent = fs.readFileSync(filePath, 'utf8');
+    console.log("Processing seed phrases...\n");
     
-    // Split by new lines to get each mnemonic
-    const mnemonics = fileContent.split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0); // Remove empty lines
+    const fileStream = createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    let currentBatch = [];
+    let processedCount = 0;
     
-    console.log("SUI Addresses from Seed Phrases:\n");
-    
-    // Process each mnemonic
-    for (const mnemonic of mnemonics) {
-      const address = getAddressFromMnemonic(mnemonic);
-      console.log(`Mnemonic: ${mnemonic}`);
-      console.log(`Address: 0x${address}`);
-      console.log("-----------------------------------");
+    for await (const line of rl) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.length > 0) {
+        currentBatch.push(trimmedLine);
+        
+        if (currentBatch.length >= BATCH_SIZE) {
+          const results = await processBatch(currentBatch);
+          printResults(results);
+          processedCount += currentBatch.length;
+          console.log(`Processed ${processedCount} seed phrases...`);
+          currentBatch = [];
+        }
+      }
     }
     
+    // Process remaining mnemonics
+    if (currentBatch.length > 0) {
+      const results = await processBatch(currentBatch);
+      printResults(results);
+      processedCount += currentBatch.length;
+    }
+    
+    console.log(`\nCompleted processing ${processedCount} seed phrases.`);
+    
   } catch (error) {
-    console.error(`Error reading or processing file: ${error.message}`);
+    console.error(`Error processing file: ${error.message}`);
   }
+}
+
+// Helper function to print results
+function printResults(results) {
+  results.forEach(result => {
+    if (result.success) {
+      console.log(`Mnemonic: ${result.mnemonic}`);
+      console.log(`Address: ${result.address}`);
+    } else {
+      console.log(`Mnemonic: ${result.mnemonic}`);
+      console.log(`Error: ${result.error}`);
+    }
+    console.log("-----------------------------------");
+  });
 }
 
 // Create a sample file with the provided seed phrases if it doesn't exist

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SUI Address Generator</title>
   <style>
+    /* Previous styles remain the same until loading section */
     body {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       line-height: 1.6;
@@ -80,6 +81,10 @@
     button:hover {
       background-color: #005bb5;
     }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
     .button-group {
       display: flex;
       gap: 10px;
@@ -87,7 +92,7 @@
     .download-btn {
       background-color: #28a745;
     }
-    .download-btn:hover {
+    .download-btn:hover:not(:disabled) {
       background-color: #218838;
     }
     .result-container {
@@ -125,12 +130,8 @@
     }
     .copy-btn {
       background-color: #6c757d;
-      color: white;
       padding: 5px 10px;
       margin-left: 10px;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
       font-size: 12px;
     }
     .copy-btn:hover {
@@ -166,23 +167,47 @@
       margin-left: 10px;
       font-style: italic;
     }
+    /* Updated loading and progress styles */
     .loading {
-      text-align: center;
       margin: 20px 0;
       display: none;
     }
-    .spinner {
-      border: 4px solid rgba(0, 0, 0, 0.1);
-      border-radius: 50%;
-      border-top: 4px solid #0072CE;
-      width: 30px;
-      height: 30px;
-      animation: spin 1s linear infinite;
-      margin: 0 auto;
+    .progress-container {
+      margin-top: 10px;
+      display: none;
     }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
+    .progress-bar {
+      width: 100%;
+      height: 20px;
+      background-color: #f0f0f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .progress {
+      width: 0;
+      height: 100%;
+      background-color: #0072CE;
+      transition: width 0.3s ease;
+    }
+    .progress-text {
+      text-align: center;
+      margin-top: 5px;
+      font-size: 14px;
+      color: #666;
+    }
+    .processed-count {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 14px;
+      color: #666;
+    }
+    .error {
+      color: #dc3545;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid #dc3545;
+      border-radius: 4px;
+      background-color: #fff;
     }
   </style>
 </head>
@@ -210,6 +235,13 @@
         <button id="process-multiple">Generate Addresses</button>
         <button id="download-multiple" class="download-btn" disabled>Download Addresses</button>
       </div>
+      <div class="progress-container" id="multiple-progress">
+        <div class="progress-bar">
+          <div class="progress"></div>
+        </div>
+        <div class="progress-text">Processing...</div>
+        <div class="processed-count"></div>
+      </div>
       <div id="multiple-result" class="result-container" style="display: none;"></div>
     </div>
     
@@ -226,12 +258,14 @@
         <button id="process-file" disabled>Generate Addresses</button>
         <button id="download-file" class="download-btn" disabled>Download Addresses</button>
       </div>
+      <div class="progress-container" id="file-progress">
+        <div class="progress-bar">
+          <div class="progress"></div>
+        </div>
+        <div class="progress-text">Processing...</div>
+        <div class="processed-count"></div>
+      </div>
       <div id="file-result" class="result-container" style="display: none;"></div>
-    </div>
-    
-    <div class="loading" id="loading">
-      <div class="spinner"></div>
-      <p>Processing...</p>
     </div>
   </div>
 
@@ -245,11 +279,9 @@
       const tabs = document.querySelectorAll('.tab');
       tabs.forEach(tab => {
         tab.addEventListener('click', () => {
-          // Remove active class from all tabs and content
           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
           document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
           
-          // Add active class to clicked tab and corresponding content
           tab.classList.add('active');
           const tabId = tab.getAttribute('data-tab');
           document.getElementById(tabId).classList.add('active');
@@ -270,26 +302,102 @@
           processFileBtn.disabled = true;
         }
       });
+
+      // Helper function to process streaming response
+      async function processStreamingResponse(response, resultContainer, progressContainer, onResult) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let processedCount = 0;
+        let html = '';
+
+        resultContainer.innerHTML = '';
+        resultContainer.style.display = 'block';
+        progressContainer.style.display = 'block';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Process complete JSON objects from the buffer
+            const chunks = buffer.split('},{');
+            buffer = chunks.pop(); // Keep the last incomplete chunk
+            
+            chunks.forEach((chunk, index) => {
+              // Add back the brackets that were split
+              if (index === 0) {
+                if (!chunk.startsWith('{')) chunk = '{' + chunk;
+              } else {
+                chunk = '{' + chunk;
+              }
+              if (index === chunks.length - 1) {
+                if (!chunk.endsWith('}')) chunk += '}';
+              } else {
+                chunk += '}';
+              }
+              
+              try {
+                const result = JSON.parse(chunk);
+                processedCount++;
+                
+                if (onResult) onResult(result);
+                
+                html += `
+                  <div class="result-item">
+                    <div><strong>Mnemonic:</strong></div>
+                    <div class="mnemonic">${result.mnemonic}</div>
+                    <div><strong>Address:</strong></div>
+                    <div class="address">${result.address} <button class="copy-btn" data-text="${result.address}">Copy</button></div>
+                  </div>
+                `;
+
+                // Update progress
+                progressContainer.querySelector('.processed-count').textContent = 
+                  `Processed ${processedCount} mnemonics`;
+                
+                // Update the result container periodically
+                if (processedCount % 50 === 0) {
+                  resultContainer.innerHTML = html;
+                  setupCopyButtons();
+                }
+              } catch (e) {
+                console.error('Error parsing chunk:', e);
+              }
+            });
+          }
+
+          // Final update
+          resultContainer.innerHTML = html;
+          setupCopyButtons();
+          progressContainer.style.display = 'none';
+          
+        } catch (error) {
+          console.error('Stream processing error:', error);
+          progressContainer.style.display = 'none';
+          throw error;
+        }
+      }
       
       // Process single mnemonic
-      document.getElementById('process-single').addEventListener('click', function() {
+      document.getElementById('process-single').addEventListener('click', async function() {
         const mnemonic = document.getElementById('single-mnemonic').value.trim();
         if (!mnemonic) {
           alert('Please enter a mnemonic phrase');
           return;
         }
         
-        showLoading(true);
-        
-        fetch('/process-mnemonic', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ mnemonic }),
-        })
-        .then(response => response.json())
-        .then(data => {
+        try {
+          const response = await fetch('/process-mnemonic', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mnemonic }),
+          });
+          
+          const data = await response.json();
           const resultContainer = document.getElementById('single-result');
           resultContainer.style.display = 'block';
           resultContainer.innerHTML = `
@@ -301,143 +409,99 @@
             </div>
           `;
           setupCopyButtons();
-          showLoading(false);
-        })
-        .catch(error => {
+        } catch (error) {
           console.error('Error:', error);
           alert('An error occurred while processing the mnemonic');
-          showLoading(false);
-        });
+        }
       });
       
       // Process multiple mnemonics
-      document.getElementById('process-multiple').addEventListener('click', function() {
+      document.getElementById('process-multiple').addEventListener('click', async function() {
         const mnemonics = document.getElementById('multiple-mnemonics').value.trim();
         if (!mnemonics) {
           alert('Please enter mnemonic phrases');
           return;
         }
         
-        showLoading(true);
-        
-        fetch('/process-multiple', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ mnemonics }),
-        })
-        .then(response => response.json())
-        .then(data => {
-          multipleResults = data.results;
-          const resultContainer = document.getElementById('multiple-result');
-          resultContainer.style.display = 'block';
-          
-          let html = '';
-          data.results.forEach(result => {
-            html += `
-              <div class="result-item">
-                <div><strong>Mnemonic:</strong></div>
-                <div class="mnemonic">${result.mnemonic}</div>
-                <div><strong>Address:</strong></div>
-                <div class="address">${result.address} <button class="copy-btn" data-text="${result.address}">Copy</button></div>
-              </div>
-            `;
+        const resultContainer = document.getElementById('multiple-result');
+        const progressContainer = document.getElementById('multiple-progress');
+        multipleResults = [];
+
+        try {
+          const response = await fetch('/process-multiple', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mnemonics }),
           });
+
+          await processStreamingResponse(
+            response, 
+            resultContainer,
+            progressContainer,
+            (result) => multipleResults.push(result)
+          );
           
-          resultContainer.innerHTML = html;
           document.getElementById('download-multiple').disabled = false;
-          setupCopyButtons();
-          showLoading(false);
-        })
-        .catch(error => {
+        } catch (error) {
           console.error('Error:', error);
           alert('An error occurred while processing the mnemonics');
-          showLoading(false);
-        });
+        }
       });
       
       // Process file
-      document.getElementById('process-file').addEventListener('click', function() {
+      document.getElementById('process-file').addEventListener('click', async function() {
         const fileInput = document.getElementById('file-input');
         if (!fileInput.files || !fileInput.files[0]) {
           alert('Please select a file');
           return;
         }
         
-        showLoading(true);
-        
         const file = fileInput.files[0];
         const reader = new FileReader();
         
-        reader.onload = function(e) {
+        reader.onload = async function(e) {
           const fileContent = e.target.result;
+          const resultContainer = document.getElementById('file-result');
+          const progressContainer = document.getElementById('file-progress');
+          fileResults = [];
           
-          fetch('/process-file', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ fileContent }),
-          })
-          .then(response => response.json())
-          .then(data => {
-            fileResults = data.results;
-            const resultContainer = document.getElementById('file-result');
-            resultContainer.style.display = 'block';
-            
-            let html = '';
-            data.results.forEach(result => {
-              html += `
-                <div class="result-item">
-                  <div><strong>Mnemonic:</strong></div>
-                  <div class="mnemonic">${result.mnemonic}</div>
-                  <div><strong>Address:</strong></div>
-                  <div class="address">${result.address} <button class="copy-btn" data-text="${result.address}">Copy</button></div>
-                </div>
-              `;
+          try {
+            const response = await fetch('/process-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fileContent }),
             });
+
+            await processStreamingResponse(
+              response, 
+              resultContainer,
+              progressContainer,
+              (result) => fileResults.push(result)
+            );
             
-            resultContainer.innerHTML = html;
             document.getElementById('download-file').disabled = false;
-            setupCopyButtons();
-            showLoading(false);
-          })
-          .catch(error => {
+          } catch (error) {
             console.error('Error:', error);
             alert('An error occurred while processing the file');
-            showLoading(false);
-          });
+          }
         };
         
         reader.readAsText(file);
       });
       
-      // Download addresses from multiple mnemonics
-      document.getElementById('download-multiple').addEventListener('click', function() {
-        if (multipleResults.length === 0) {
+      // Download functions
+      function downloadResults(results, filename) {
+        if (results.length === 0) {
           alert('No addresses to download');
           return;
         }
         
-        const addressesText = multipleResults.map(result => result.address).join('\n');
-        downloadTextFile(addressesText, 'sui_addresses.txt');
-      });
-      
-      // Download addresses from file
-      document.getElementById('download-file').addEventListener('click', function() {
-        if (fileResults.length === 0) {
-          alert('No addresses to download');
-          return;
-        }
+        const addressesText = results
+          .filter(result => result.address)
+          .map(result => result.address)
+          .join('\n');
         
-        const addressesText = fileResults.map(result => result.address).join('\n');
-        downloadTextFile(addressesText, 'sui_addresses.txt');
-      });
-      
-      // Function to download text as a file
-      function downloadTextFile(text, filename) {
-        const blob = new Blob([text], { type: 'text/plain' });
+        const blob = new Blob([addressesText], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -449,28 +513,33 @@
           URL.revokeObjectURL(url);
         }, 0);
       }
+
+      // Download buttons
+      document.getElementById('download-multiple').addEventListener('click', () => {
+        downloadResults(multipleResults, 'sui_addresses_multiple.txt');
+      });
+      
+      document.getElementById('download-file').addEventListener('click', () => {
+        downloadResults(fileResults, 'sui_addresses_file.txt');
+      });
       
       // Setup copy buttons
       function setupCopyButtons() {
         document.querySelectorAll('.copy-btn').forEach(button => {
-          button.addEventListener('click', function() {
+          button.addEventListener('click', async function() {
             const text = this.getAttribute('data-text');
-            navigator.clipboard.writeText(text).then(() => {
+            try {
+              await navigator.clipboard.writeText(text);
               const originalText = this.textContent;
               this.textContent = 'Copied!';
               setTimeout(() => {
                 this.textContent = originalText;
               }, 2000);
-            }).catch(err => {
+            } catch (err) {
               console.error('Failed to copy text: ', err);
-            });
+            }
           });
         });
-      }
-      
-      // Show/hide loading spinner
-      function showLoading(show) {
-        document.getElementById('loading').style.display = show ? 'block' : 'none';
       }
     });
   </script>
