@@ -1,0 +1,21 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+
+[[redirects]]
+  from = "/process-mnemonic"
+  to = "/.netlify/functions/process-mnemonic"
+  status = 200
+
+[[redirects]]
+  from = "/process-multiple"
+  to = "/.netlify/functions/process-multiple"
+  status = 200
+
+[[redirects]]
+  from = "/process-file"
+  to = "/.netlify/functions/process-file"
+  status = 200
